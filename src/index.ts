@@ -1,128 +1,145 @@
-import { Buffer } from "https://deno.land/std@0.155.0/io/buffer.ts";
-import { iterateReader } from "../mods.ts";
+import PQueue from "https://deno.land/x/p_queue@1.0.1/mod.ts";
+import * as log from "https://deno.land/std@0.155.0/log/mod.ts";
 
-// const connection = await Deno.connect({
-//   port: 443,
-//   hostname: "localtunnel.me",
-//   transport: "tcp",
-// });
+import { startServer } from "../server.ts";
 
-// connection.setKeepAlive(true);
+await log.setup({
+  handlers: {
+    console: new log.handlers.ConsoleHandler("DEBUG", {
+      formatter: (logRecord) => {
+        const { levelName, msg, args } = logRecord;
 
-// // const buffer = new Uint8Array(1024);
-// // await connection.read(buffer);
+        const argsString = args.reduce((acc, arg) => {
+          if (typeof arg === "object") {
+            return `${acc} ${JSON.stringify(arg)}`;
+          }
+        }, "");
 
-// // console.log(buffer.toString());
+        return `${levelName} ${msg} ::: ${argsString}`;
+      },
+    }),
+  },
+  loggers: {
+    default: {
+      level: "DEBUG",
+      handlers: ["console"],
+    },
+  },
+});
 
-// console.log("connected");
+const logger = log.getLogger();
 
-// for await (const chunk of iterateReader(connection, { bufSize: 8 })) {
-//   console.log(chunk);
-// }
+startServer();
 
 type GetLocaltunnelResponse = {
   id: string;
   port: number;
   url: string;
-  max_conn_count: number;
+  maxNbConnections: number;
 };
 
-async function getLocaltunnel(
-  subdomain?: string
-): Promise<GetLocaltunnelResponse> {
-  const url = new URL(subdomain || "", "https://localtunnel.me");
+type Localtunnel = {
+  port: number;
+  url: string;
+  maxNbConnections: number;
+  hostname: string;
+};
+
+async function getLocaltunnel(subdomain?: string): Promise<Localtunnel> {
+  const localtunnelUrl = new URL(subdomain || "", "https://localtunnel.me");
 
   if (!subdomain) {
-    url.searchParams.append("new", "");
+    localtunnelUrl.searchParams.append("new", "");
   }
 
-  const response = await fetch(url);
+  const response = await fetch(localtunnelUrl);
 
-  return response.json();
+  const { port, url, max_conn_count } = await response.json();
+
+  return {
+    port,
+    url,
+    maxNbConnections: max_conn_count,
+    hostname: new URL(url).hostname,
+  };
 }
 
-async function startProxying(hostname: string, port: number) {
-  const connection = await Deno.connect({
+const { url, port, maxNbConnections, hostname } = await getLocaltunnel(
+  "trompette-deluxe"
+);
+
+logger.info("localtunnel", {
+  url,
+  port,
+  maxNbConnections,
+});
+
+function waitForConnection(hostname: string, port: number): Promise<Deno.Conn> {
+  return new Promise((resolve, reject) => {
+    const interval = setInterval(async () => {
+      try {
+        logger.info("Trying to connect to localtunnel", { hostname, port });
+        const conn = await Deno.connect({ hostname, port });
+        clearInterval(interval);
+        resolve(conn);
+      } catch (error) {
+        logger.error(error);
+        if (error instanceof Deno.errors.ConnectionRefused) {
+          return;
+        }
+        clearInterval(interval);
+        reject(error);
+      }
+    }, 1000);
+  });
+}
+
+await Promise.all([
+  waitForConnection(hostname, port),
+  waitForConnection("localhost", 8080),
+]);
+
+logger.info("Connected");
+
+const queue = new PQueue({
+  concurrency: maxNbConnections,
+  autoStart: true,
+});
+
+async function taskHandler() {
+  const tunnelConnection = await Deno.connect({
     port,
-    hostname,
+    hostname: url,
+    transport: "tcp",
   });
 
-  connection.setKeepAlive(true);
-
-  const c = await Deno.connect({
+  const appConnection = await Deno.connect({
     port: 8080,
     hostname: "localhost",
     transport: "tcp",
   });
 
-  let timer: number | undefined = undefined;
-
-  let entries: any[] = [];
-
-  const body = new ReadableStream({
-    start(controller) {
-      timer = setInterval(() => {
-        entries.forEach((entry) => {
-          controller.enqueue(entry);
-        });
-        entries = [];
-      }, 1000);
-
-      console.log("okok");
-    },
-    cancel() {
-      if (timer !== undefined) {
-        clearInterval(timer);
-      }
-    },
-  });
-
-  body.pipeTo(c.writable);
-
-  for await (const chunk of iterateReader(connection)) {
-    entries.push(chunk);
-  }
+  tunnelConnection.readable.pipeTo(appConnection.writable);
+  appConnection.readable.pipeTo(tunnelConnection.writable);
 }
 
-const { url, port } = await getLocaltunnel("test");
-
-console.log(url);
-
-const localtunnelHostname = new URL(url).hostname;
-
-const server = Deno.listen({ port: 8080 });
-console.log(`HTTP webserver running.  Access it at:  http://localhost:8080/`);
-
-async function startServer() {
-  // Connections to the server will be yielded up as an async iterable.
-  for await (const conn of server) {
-    console.log("in server !!!");
-    // In order to not be blocking, we need to handle each connection individually
-    // without awaiting the function
-    serveHttp(conn);
-  }
-
-  async function serveHttp(conn: Deno.Conn) {
-    // This "upgrades" a network connection into an HTTP connection.
-    const httpConn = Deno.serveHttp(conn);
-    // Each request sent over the HTTP connection will be yielded as an async
-    // iterator from the HTTP connection.
-    for await (const requestEvent of httpConn) {
-      // The native HTTP server uses the web standard `Request` and `Response`
-      // objects.
-      const body = `Your user-agent is:\n\n${
-        requestEvent.request.headers.get("user-agent") ?? "Unknown"
-      }`;
-      // The requestEvent's `.respondWith()` method is how we send the response
-      // back to the client.
-      requestEvent.respondWith(
-        new Response(body, {
-          status: 200,
-        })
-      );
+async function addToQueue() {
+  try {
+    await queue.add(taskHandler);
+  } catch (error) {
+    if (error instanceof Deno.errors.ConnectionRefused) {
+      queue.pause();
     }
+    console.error(error);
   }
 }
-startServer();
 
-await startProxying(localtunnelHostname, port);
+queue.addEventListener("next", () => {
+  addToQueue();
+});
+
+for (let i = 0; i < maxNbConnections; i++) {
+  addToQueue();
+}
+
+queue.start();
