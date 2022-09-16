@@ -1,5 +1,6 @@
 import PQueue from "https://deno.land/x/p_queue@1.0.1/mod.ts";
 import * as log from "https://deno.land/std@0.155.0/log/mod.ts";
+import * as streams from "https://deno.land/std@0.156.0/streams/conversion.ts";
 
 import { startServer } from "../server.ts";
 
@@ -15,7 +16,7 @@ await log.setup({
           }
         }, "");
 
-        return `${levelName} ${msg} ::: ${argsString}`;
+        return `${levelName} ${msg}${argsString ? " ::: " : ""}${argsString}`;
       },
     }),
   },
@@ -45,6 +46,23 @@ type Localtunnel = {
   hostname: string;
 };
 
+const promiseRetry = async <T>(
+  fn: () => Promise<T>,
+  retriesLeft = 5,
+  interval = 1000
+): Promise<T> => {
+  try {
+    return await fn();
+  } catch (error) {
+    if (retriesLeft === 1) {
+      throw error;
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, interval));
+      return promiseRetry(fn, retriesLeft - 1, interval);
+    }
+  }
+};
+
 async function getLocaltunnel(subdomain?: string): Promise<Localtunnel> {
   const localtunnelUrl = new URL(subdomain || "", "https://localtunnel.me");
 
@@ -64,9 +82,7 @@ async function getLocaltunnel(subdomain?: string): Promise<Localtunnel> {
   };
 }
 
-const { url, port, maxNbConnections, hostname } = await getLocaltunnel(
-  "trompette-deluxe"
-);
+const { url, port, maxNbConnections, hostname } = await getLocaltunnel();
 
 logger.info("localtunnel", {
   url,
@@ -74,63 +90,88 @@ logger.info("localtunnel", {
   maxNbConnections,
 });
 
-function waitForConnection(hostname: string, port: number): Promise<Deno.Conn> {
-  return new Promise((resolve, reject) => {
-    const interval = setInterval(async () => {
-      try {
-        logger.info("Trying to connect to localtunnel", { hostname, port });
-        const conn = await Deno.connect({ hostname, port });
-        clearInterval(interval);
-        resolve(conn);
-      } catch (error) {
-        logger.error(error);
-        if (error instanceof Deno.errors.ConnectionRefused) {
-          return;
-        }
-        clearInterval(interval);
-        reject(error);
-      }
-    }, 1000);
-  });
+function waitForConnection(hostname: string, port: number): Promise<void> {
+  return promiseRetry(
+    async () => {
+      logger.debug("waiting for connection", { hostname, port });
+      const connection = await Deno.connect({ hostname, port });
+
+      connection.close();
+    },
+    25,
+    1000
+  );
 }
-
-await Promise.all([
-  waitForConnection(hostname, port),
-  waitForConnection("localhost", 8080),
-]);
-
-logger.info("Connected");
 
 const queue = new PQueue({
   concurrency: maxNbConnections,
-  autoStart: true,
+  autoStart: false,
 });
 
-async function taskHandler() {
-  const tunnelConnection = await Deno.connect({
-    port,
-    hostname: url,
-    transport: "tcp",
-  });
+async function taskHandler(
+  tunnelConnection: Deno.Conn,
+  appConnection: Deno.Conn
+) {
+  logger.debug("taskHandler start");
 
-  const appConnection = await Deno.connect({
-    port: 8080,
-    hostname: "localhost",
-    transport: "tcp",
-  });
+  const appToTunnel = async () => {
+    // for await (const chunk of streams.iterateReader(appConnection)) {
+    //   tunnelConnection.write(chunk);
+    // }
+    try {
+      await appConnection.readable.pipeTo(tunnelConnection.writable);
+    } catch (error) {
+      logger.error("appToTunnel error", { error });
+    }
+  };
 
-  tunnelConnection.readable.pipeTo(appConnection.writable);
-  appConnection.readable.pipeTo(tunnelConnection.writable);
+  const tunnelToApp = async () => {
+    // let logged = false;
+    // for await (const chunk of streams.iterateReader(tunnelConnection)) {
+    //   if (!logged) {
+    //     logger.info("tunnel connected");
+    //     logged = true;
+    //   }
+    //   appConnection.write(chunk);
+    // }
+    try {
+      await tunnelConnection.readable.pipeTo(appConnection.writable);
+    } catch (error) {
+      logger.error("tunnelToApp error", { error });
+    }
+  };
+
+  await Promise.all([appToTunnel(), tunnelToApp()]);
+
+  logger.debug("taskHandler end");
 }
 
+const waitForConnections = async () => {
+  queue.pause();
+
+  await Promise.all([
+    waitForConnection(hostname, port),
+    waitForConnection("localhost", 8080),
+  ]);
+
+  queue.start();
+};
+
 async function addToQueue() {
+  let tunnelConnection: Deno.Conn | null = null;
+  let appConnection: Deno.Conn | null = null;
+
   try {
-    await queue.add(taskHandler);
+    [tunnelConnection, appConnection] = await Promise.all([
+      Deno.connect({ hostname, port, transport: "tcp" }),
+      Deno.connect({ hostname: "localhost", port: 8080, transport: "tcp" }),
+    ]);
+
+    await queue.add(() => taskHandler(tunnelConnection!, appConnection!));
   } catch (error) {
-    if (error instanceof Deno.errors.ConnectionRefused) {
-      queue.pause();
-    }
     console.error(error);
+    // logger.error("taskHandler error", { error });
+  } finally {
   }
 }
 
@@ -138,8 +179,8 @@ queue.addEventListener("next", () => {
   addToQueue();
 });
 
-for (let i = 0; i < maxNbConnections; i++) {
-  addToQueue();
-}
+new Array(maxNbConnections).fill(null).map(() => addToQueue());
 
-queue.start();
+await waitForConnections();
+
+logger.info("Connected");
