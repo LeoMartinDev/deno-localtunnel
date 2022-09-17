@@ -1,6 +1,7 @@
 import PQueue from "https://deno.land/x/p_queue@1.0.1/mod.ts";
 import * as log from "https://deno.land/std@0.155.0/log/mod.ts";
 import * as net from "https://deno.land/std@0.137.0/node/net.ts";
+import * as streams from "https://deno.land/std@0.156.0/io/streams.ts";
 
 import { startServer } from "../server.ts";
 
@@ -114,75 +115,34 @@ async function taskHandler(
 ) {
   logger.debug("taskHandler start");
 
-  await new Promise<void>((resolve, reject) => {
-    const tunnelSocket = net.createConnection({
-      port,
-      host: hostname,
-    });
+  const appToTunnel = async () => {
+    // for await (const chunk of streams.iterateReader(appConnection)) {
+    //   tunnelConnection.write(chunk);
+    // }
+    try {
+      await appConnection.readable.pipeTo(tunnelConnection.writable);
+    } catch (error) {
+      logger.error("appToTunnel error", { error });
+    }
+  };
 
-    tunnelSocket.pause();
+  const tunnelToApp = async () => {
+    // let logged = false;
+    // for await (const chunk of streams.iterateReader(tunnelConnection)) {
+    //   if (!logged) {
+    //     logger.info("tunnel connected");
+    //     logged = true;
+    //   }
+    //   appConnection.write(chunk);
+    // }
+    try {
+      await tunnelConnection.readable.pipeTo(appConnection.writable);
+    } catch (error) {
+      logger.error("tunnelToApp error", { error });
+    }
+  };
 
-    tunnelSocket.on("readable", () => {
-      const appSocket = net.createConnection({
-        port: 8080,
-        host: "localhost",
-      });
-
-      appSocket.pause();
-
-      appSocket.on("readable", () => {
-        appSocket.pipe(tunnelSocket);
-        tunnelSocket.pipe(appSocket);
-      });
-
-      appSocket.on("error", (error) => {
-        logger.error("appSocket error", { error });
-      });
-
-      tunnelSocket.resume();
-      appSocket.resume();
-
-      appSocket.on("end", () => {
-        tunnelSocket.end();
-        resolve();
-      });
-    });
-
-    tunnelSocket.on("error", (error) => {
-      logger.error("tunnelSocket error", { error });
-
-      reject(error);
-    });
-  });
-
-  // const appToTunnel = async () => {
-  //   // for await (const chunk of streams.iterateReader(appConnection)) {
-  //   //   tunnelConnection.write(chunk);
-  //   // }
-  //   try {
-  //     await appConnection.readable.pipeTo(tunnelConnection.writable);
-  //   } catch (error) {
-  //     logger.error("appToTunnel error", { error });
-  //   }
-  // };
-
-  // const tunnelToApp = async () => {
-  //   // let logged = false;
-  //   // for await (const chunk of streams.iterateReader(tunnelConnection)) {
-  //   //   if (!logged) {
-  //   //     logger.info("tunnel connected");
-  //   //     logged = true;
-  //   //   }
-  //   //   appConnection.write(chunk);
-  //   // }
-  //   try {
-  //     await tunnelConnection.readable.pipeTo(appConnection.writable);
-  //   } catch (error) {
-  //     logger.error("tunnelToApp error", { error });
-  //   }
-  // };
-
-  // await Promise.all([appToTunnel(), tunnelToApp()]);
+  await Promise.all([appToTunnel(), tunnelToApp()]);
 
   logger.debug("taskHandler end");
 }
@@ -209,9 +169,10 @@ async function addToQueue() {
     ]);
 
     await queue.add(() => taskHandler(tunnelConnection!, appConnection!));
+
+    await queue.add(() => taskHandler());
   } catch (error) {
-    console.error(error);
-    // logger.error("taskHandler error", { error });
+    logger.error("taskHandler error", { error });
   } finally {
   }
 }
