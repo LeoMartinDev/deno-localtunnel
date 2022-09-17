@@ -1,6 +1,6 @@
 import PQueue from "https://deno.land/x/p_queue@1.0.1/mod.ts";
 import * as log from "https://deno.land/std@0.155.0/log/mod.ts";
-import * as streams from "https://deno.land/std@0.156.0/streams/conversion.ts";
+import * as net from "https://deno.land/std@0.137.0/node/net.ts";
 
 import { startServer } from "../server.ts";
 
@@ -113,6 +113,34 @@ async function taskHandler(
   appConnection: Deno.Conn
 ) {
   logger.debug("taskHandler start");
+
+  const tunnelSocket = net.createConnection({
+    port,
+    host: hostname,
+  });
+
+  tunnelSocket.pause();
+
+  tunnelSocket.on("readable", () => {
+    const appSocket = net.createConnection({
+      port: 8080,
+      host: "localhost",
+    });
+
+    appSocket.pause();
+
+    appSocket.on("readable", () => {
+      appSocket.pipe(tunnelSocket);
+      tunnelSocket.pipe(appSocket);
+    });
+
+    appSocket.on("error", (error) => {
+      logger.error("appSocket error", { error });
+    });
+
+    tunnelSocket.resume();
+    appSocket.resume();
+  });
 
   const appToTunnel = async () => {
     // for await (const chunk of streams.iterateReader(appConnection)) {
