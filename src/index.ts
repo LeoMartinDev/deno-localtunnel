@@ -34,6 +34,11 @@ const logger = log.getLogger();
 
 startServer();
 
+type SocketOptions = {
+  hostname: string;
+  port: number;
+};
+
 type GetLocaltunnelResponse = {
   id: string;
   port: number;
@@ -111,8 +116,8 @@ const queue = new PQueue({
 });
 
 async function taskHandler(
-  tunnelConnection: Deno.Conn,
-  appConnection: Deno.Conn
+  tunnelOptions: SocketOptions,
+  appOptions: SocketOptions
 ) {
   logger.debug("taskHandler start");
 
@@ -126,11 +131,13 @@ async function taskHandler(
         return reject();
       }
 
-      socket.addListener("close", () => {
+      const remoteCloseListener = () => {
         logger.debug("socket close");
         appSocket.destroy();
         resolve();
-      });
+      };
+
+      socket.addListener("close", remoteCloseListener);
 
       socket.pause();
 
@@ -145,7 +152,20 @@ async function taskHandler(
 
       appSocket.addListener("error", (error) => {
         logger.error("appSocket error", { error });
-        socket.destroy();
+
+        appSocket.end();
+
+        socket.removeListener("close", remoteCloseListener);
+
+        console.log(error);
+
+        // if (error?.code !== "ECONNREFUSED" && error?.code !== "ECONNRESET") {
+        //   socket.end();
+
+        //   reject(error);
+        // }
+
+        // retry local app connection
       });
 
       appSocket.addListener("close", () => {
@@ -154,29 +174,11 @@ async function taskHandler(
         resolve();
       });
 
-      appSocket.connect(8080, "localhost");
+      appSocket.connect(appOptions.port, appOptions.hostname);
     });
 
-    socket.connect(port, hostname);
+    socket.connect(tunnelOptions.port, tunnelOptions.hostname);
   });
-
-  // const appToTunnel = async () => {
-  //   try {
-  //     await appConnection.readable.pipeTo(tunnelConnection.writable);
-  //   } catch (error) {
-  //     logger.error("appToTunnel error", { error });
-  //   }
-  // };
-
-  // const tunnelToApp = async () => {
-  //   try {
-  //     await tunnelConnection.readable.pipeTo(appConnection.writable);
-  //   } catch (error) {
-  //     logger.error("tunnelToApp error", { error });
-  //   }
-  // };
-
-  // await Promise.all([appToTunnel(), tunnelToApp()]);
 
   logger.debug("taskHandler end");
 }
@@ -192,28 +194,38 @@ const waitForConnections = async () => {
   queue.start();
 };
 
-async function addToQueue() {
-  let tunnelConnection: Deno.Conn | null = null;
-  let appConnection: Deno.Conn | null = null;
-
-  try {
-    // [tunnelConnection, appConnection] = await Promise.all([
-    //   Deno.connect({ hostname, port, transport: "tcp" }),
-    //   Deno.connect({ hostname: "localhost", port: 8080, transport: "tcp" }),
-    // ]);
-
-    await queue.add(() => taskHandler(tunnelConnection!, appConnection!));
-  } catch (error) {
-    logger.error("taskHandler error", { error });
-  } finally {
-  }
+async function addToQueue(
+  tunnelOptions: SocketOptions,
+  appOptions: SocketOptions
+) {
+  await queue.add(() => taskHandler(tunnelOptions, appOptions));
 }
 
 queue.addEventListener("next", () => {
-  addToQueue();
+  addToQueue(
+    {
+      hostname,
+      port,
+    },
+    {
+      hostname: "localhost",
+      port: 8080,
+    }
+  );
 });
 
-new Array(maxNbConnections).fill(null).map(() => addToQueue());
+new Array(maxNbConnections).fill(null).map(() =>
+  addToQueue(
+    {
+      hostname,
+      port,
+    },
+    {
+      hostname: "localhost",
+      port: 8080,
+    }
+  )
+);
 
 await waitForConnections();
 
