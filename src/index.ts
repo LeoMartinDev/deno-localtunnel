@@ -1,11 +1,8 @@
 import PQueue from "https://deno.land/x/p_queue@1.0.1/mod.ts";
 import * as log from "https://deno.land/std@0.155.0/log/mod.ts";
-import * as net from "https://deno.land/std@0.137.0/node/net.ts";
-import * as streams from "https://deno.land/std@0.156.0/io/streams.ts";
+import * as net from "https://deno.land/std@0.156.0/node/net.ts";
 
 import { startServer } from "../server.ts";
-import { resolve } from "https://deno.land/std@0.137.0/path/win32.ts";
-
 await log.setup({
   handlers: {
     console: new log.handlers.ConsoleHandler("DEBUG", {
@@ -32,7 +29,7 @@ await log.setup({
 
 const logger = log.getLogger();
 
-startServer();
+// startServer();
 
 type SocketOptions = {
   hostname: string;
@@ -128,7 +125,7 @@ async function taskHandler(
 
     socket.addListener("connect", () => {
       if (socket.destroyed) {
-        return reject();
+        return reject(new Error("Socket destroyed"));
       }
 
       const remoteCloseListener = () => {
@@ -150,22 +147,22 @@ async function taskHandler(
         socket.pipe(appSocket);
       });
 
-      appSocket.addListener("error", (error) => {
+      appSocket.addListener("error", (error: any) => {
         logger.error("appSocket error", { error });
 
         appSocket.end();
 
         socket.removeListener("close", remoteCloseListener);
 
-        console.log(error);
-
-        // if (error?.code !== "ECONNREFUSED" && error?.code !== "ECONNRESET") {
+        // if (error.code! !== "ECONNREFUSED" && error.code! !== "ECONNRESET") {
         //   socket.end();
 
-        //   reject(error);
+        //   return reject(error);
         // }
 
-        // retry local app connection
+        socket.end();
+
+        reject(error);
       });
 
       appSocket.addListener("close", () => {
@@ -198,7 +195,11 @@ async function addToQueue(
   tunnelOptions: SocketOptions,
   appOptions: SocketOptions
 ) {
-  await queue.add(() => taskHandler(tunnelOptions, appOptions));
+  try {
+    await queue.add(() => taskHandler(tunnelOptions, appOptions));
+  } catch (error) {
+    logger.error("addToQueueError", { error });
+  }
 }
 
 queue.addEventListener("next", () => {
