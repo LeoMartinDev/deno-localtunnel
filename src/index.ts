@@ -126,14 +126,26 @@ async function taskHandler(
         return reject();
       }
 
+      socket.addListener("close", () => {
+        logger.debug("socket close");
+        appSocket.destroy();
+        resolve();
+      });
+
       socket.pause();
 
       const appSocket = new net.Socket({});
 
       appSocket.addListener("connect", () => {
         socket.resume();
+
         appSocket.pipe(socket);
         socket.pipe(appSocket);
+      });
+
+      appSocket.addListener("error", (error) => {
+        logger.error("appSocket error", { error });
+        socket.destroy();
       });
 
       appSocket.addListener("close", () => {
