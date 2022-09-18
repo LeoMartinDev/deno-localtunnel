@@ -4,6 +4,7 @@ import * as net from "https://deno.land/std@0.137.0/node/net.ts";
 import * as streams from "https://deno.land/std@0.156.0/io/streams.ts";
 
 import { startServer } from "../server.ts";
+import { resolve } from "https://deno.land/std@0.137.0/path/win32.ts";
 
 await log.setup({
   handlers: {
@@ -115,34 +116,55 @@ async function taskHandler(
 ) {
   logger.debug("taskHandler start");
 
-  const appToTunnel = async () => {
-    // for await (const chunk of streams.iterateReader(appConnection)) {
-    //   tunnelConnection.write(chunk);
-    // }
-    try {
-      await appConnection.readable.pipeTo(tunnelConnection.writable);
-    } catch (error) {
-      logger.error("appToTunnel error", { error });
-    }
-  };
+  await new Promise<void>((resolve, reject) => {
+    const socket = new net.Socket({});
 
-  const tunnelToApp = async () => {
-    // let logged = false;
-    // for await (const chunk of streams.iterateReader(tunnelConnection)) {
-    //   if (!logged) {
-    //     logger.info("tunnel connected");
-    //     logged = true;
-    //   }
-    //   appConnection.write(chunk);
-    // }
-    try {
-      await tunnelConnection.readable.pipeTo(appConnection.writable);
-    } catch (error) {
-      logger.error("tunnelToApp error", { error });
-    }
-  };
+    socket.setKeepAlive(true);
 
-  await Promise.all([appToTunnel(), tunnelToApp()]);
+    socket.addListener("connect", () => {
+      if (socket.destroyed) {
+        return reject();
+      }
+
+      socket.pause();
+
+      const appSocket = new net.Socket({});
+
+      appSocket.addListener("connect", () => {
+        socket.resume();
+        appSocket.pipe(socket);
+        socket.pipe(appSocket);
+      });
+
+      appSocket.addListener("close", () => {
+        logger.debug("appSocket close");
+        socket.destroy();
+        resolve();
+      });
+
+      appSocket.connect(8080, "localhost");
+    });
+
+    socket.connect(port, hostname);
+  });
+
+  // const appToTunnel = async () => {
+  //   try {
+  //     await appConnection.readable.pipeTo(tunnelConnection.writable);
+  //   } catch (error) {
+  //     logger.error("appToTunnel error", { error });
+  //   }
+  // };
+
+  // const tunnelToApp = async () => {
+  //   try {
+  //     await tunnelConnection.readable.pipeTo(appConnection.writable);
+  //   } catch (error) {
+  //     logger.error("tunnelToApp error", { error });
+  //   }
+  // };
+
+  // await Promise.all([appToTunnel(), tunnelToApp()]);
 
   logger.debug("taskHandler end");
 }
@@ -163,14 +185,12 @@ async function addToQueue() {
   let appConnection: Deno.Conn | null = null;
 
   try {
-    [tunnelConnection, appConnection] = await Promise.all([
-      Deno.connect({ hostname, port, transport: "tcp" }),
-      Deno.connect({ hostname: "localhost", port: 8080, transport: "tcp" }),
-    ]);
+    // [tunnelConnection, appConnection] = await Promise.all([
+    //   Deno.connect({ hostname, port, transport: "tcp" }),
+    //   Deno.connect({ hostname: "localhost", port: 8080, transport: "tcp" }),
+    // ]);
 
     await queue.add(() => taskHandler(tunnelConnection!, appConnection!));
-
-    await queue.add(() => taskHandler());
   } catch (error) {
     logger.error("taskHandler error", { error });
   } finally {
