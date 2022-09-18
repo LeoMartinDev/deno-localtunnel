@@ -110,6 +110,7 @@ function waitForConnection(hostname: string, port: number): Promise<void> {
 const queue = new PQueue({
   concurrency: maxNbConnections,
   autoStart: false,
+  timeout: 1000 * 60 * 1, // 1 minute
 });
 
 async function taskHandler(
