@@ -2,7 +2,9 @@ import PQueue from "https://deno.land/x/p_queue@1.0.1/mod.ts";
 import * as log from "https://deno.land/std@0.155.0/log/mod.ts";
 import * as net from "https://deno.land/std@0.156.0/node/net.ts";
 
-import { startServer } from "../server.ts";
+import { promiseRetry } from "./utils/promise-retry.ts";
+import { getLocaltunnelConnectionInfo } from "./get-localtunnel-connection-info.ts";
+
 await log.setup({
   handlers: {
     console: new log.handlers.ConsoleHandler("DEBUG", {
@@ -36,13 +38,6 @@ type SocketOptions = {
   port: number;
 };
 
-type GetLocaltunnelResponse = {
-  id: string;
-  port: number;
-  url: string;
-  maxNbConnections: number;
-};
-
 type Localtunnel = {
   port: number;
   url: string;
@@ -50,43 +45,8 @@ type Localtunnel = {
   hostname: string;
 };
 
-const promiseRetry = async <T>(
-  fn: () => Promise<T>,
-  retriesLeft = 5,
-  interval = 1000
-): Promise<T> => {
-  try {
-    return await fn();
-  } catch (error) {
-    if (retriesLeft === 1) {
-      throw error;
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, interval));
-      return promiseRetry(fn, retriesLeft - 1, interval);
-    }
-  }
-};
-
-async function getLocaltunnel(subdomain?: string): Promise<Localtunnel> {
-  const localtunnelUrl = new URL(subdomain || "", "https://localtunnel.me");
-
-  if (!subdomain) {
-    localtunnelUrl.searchParams.append("new", "");
-  }
-
-  const response = await fetch(localtunnelUrl);
-
-  const { port, url, max_conn_count } = await response.json();
-
-  return {
-    port,
-    url,
-    maxNbConnections: max_conn_count,
-    hostname: new URL(url).hostname,
-  };
-}
-
-const { url, port, maxNbConnections, hostname } = await getLocaltunnel();
+const { url, port, maxNbConnections, hostname } =
+  await getLocaltunnelConnectionInfo("https://localtunnel.me", "test");
 
 logger.info("localtunnel", {
   url,
