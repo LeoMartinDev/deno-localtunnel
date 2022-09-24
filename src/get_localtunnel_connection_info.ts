@@ -1,5 +1,4 @@
-import { z } from "https://deno.land/x/zod@v3.19.1/mod.ts";
-
+import { z } from "../deps.ts";
 import { Localtunnel } from "./types.ts";
 
 type GetLocaltunnelResponse = {
@@ -8,7 +7,6 @@ type GetLocaltunnelResponse = {
   url: string;
   max_conn_count: number;
 };
-// "https://localtunnel.me"
 
 function apiResponseToLocaltunnel(apiResponse: GetLocaltunnelResponse) {
   return {

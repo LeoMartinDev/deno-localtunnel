@@ -1,8 +1,8 @@
-import PQueue from "https://deno.land/x/p_queue@1.0.1/mod.ts";
-import { getLogger, Logger } from "https://deno.land/std@0.157.0/log/mod.ts";
+import { Logger, PQueue } from "../deps.ts";
 
-import { getLocaltunnelConnectionInfo } from "./get-localtunnel-connection-info.ts";
-import { createTaskHandler } from "./create-task-handler.ts";
+import { createLogger } from "./create_logger.ts";
+import { createTaskHandler } from "./create_task_handler.ts";
+import { getLocaltunnelConnectionInfo } from "./get_localtunnel_connection_info.ts";
 
 type CreateLocalTunnelOptions = {
   subdomain?: string;
@@ -16,7 +16,7 @@ export async function createLocaltunnel(
   options?: CreateLocalTunnelOptions
 ) {
   const {
-    logger = await getLogger(),
+    logger = createLogger(),
     subdomain,
     domain = "https://localtunnel.me",
   } = options || {};

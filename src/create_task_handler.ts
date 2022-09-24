@@ -1,6 +1,5 @@
-import * as net from "https://deno.land/std@0.156.0/node/net.ts";
-
-import { Logger } from "./get-logger.ts";
+import { Socket } from "../deps.ts";
+import { Logger } from "./create_logger.ts";
 import { SocketOptions } from "./types.ts";
 
 export function createTaskHandler(logger: Logger) {
@@ -11,7 +10,7 @@ export function createTaskHandler(logger: Logger) {
     logger.debug("taskHandler start");
 
     await new Promise<void>((resolve, reject) => {
-      const socket = new net.Socket({});
+      const socket = new Socket({});
 
       socket.setKeepAlive(true);
 
@@ -30,7 +29,7 @@ export function createTaskHandler(logger: Logger) {
 
         socket.pause();
 
-        const appSocket = new net.Socket({});
+        const appSocket = new Socket({});
 
         appSocket.addListener("connect", () => {
           socket.resume();
@@ -39,7 +38,7 @@ export function createTaskHandler(logger: Logger) {
           socket.pipe(appSocket);
         });
 
-        appSocket.addListener("error", (error: any) => {
+        appSocket.addListener("error", (error: unknown) => {
           logger.error("appSocket error", { error });
 
           appSocket.end();

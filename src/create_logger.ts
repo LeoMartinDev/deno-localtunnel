@@ -1,9 +1,9 @@
-import * as log from "https://deno.land/std@0.157.0/log/mod.ts";
+import { log } from "../deps.ts";
 
 export type Logger = log.Logger;
 
-export async function setupLogger() {
-  await log.setup({
+export function createLogger() {
+  log.setup({
     handlers: {
       console: new log.handlers.ConsoleHandler("DEBUG", {
         formatter: (logRecord) => {
